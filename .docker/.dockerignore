@@ -1,0 +1,10 @@
+.git
+.gitignore
+README.md
+LICENSE
+aibox
+install.sh
+.docker
+.github
+node_modules
+*.log

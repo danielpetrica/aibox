@@ -1,0 +1,288 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGE="ghcr.io/danielpetrica/aibox"
+CONFIG_DIR="${HOME}/.config/aibox"
+CONFIG_FILE="${CONFIG_DIR}/config"
+VERSION_FILE="${CONFIG_DIR}/version"
+
+# --------------------------------------------------
+# config loading
+# --------------------------------------------------
+
+AIBOX_MOUNT_GITCONFIG=0
+AIBOX_MOUNT_OPENCODE_CONFIG=0
+AIBOX_VERSION=latest
+
+if [[ -f "${CONFIG_FILE}" ]]; then
+    source "${CONFIG_FILE}"
+fi
+
+# --------------------------------------------------
+# helpers
+# --------------------------------------------------
+
+image_ref() {
+    echo "${IMAGE}:${AIBOX_VERSION}"
+}
+
+docker_run() {
+    local cmd="${1:-opencode}"
+    shift || true
+
+    local mounts=()
+    mounts+=(-v "$(pwd):/workspace")
+
+    if [[ "${AIBOX_MOUNT_GITCONFIG}" == "1" ]] && [[ -f "${HOME}/.gitconfig" ]]; then
+        mounts+=(-v "${HOME}/.gitconfig:/home/aibox/.gitconfig:ro")
+    fi
+
+    if [[ "${AIBOX_MOUNT_OPENCODE_CONFIG}" == "1" ]] && [[ -d "${HOME}/.config/opencode" ]]; then
+        mounts+=(-v "${HOME}/.config/opencode:/home/aibox/.config/opencode")
+    fi
+
+    exec docker run -it --rm \
+        "${mounts[@]}" \
+        --entrypoint "${cmd}" \
+        "$(image_ref)" \
+        "$@"
+}
+
+# --------------------------------------------------
+# commands
+# --------------------------------------------------
+
+cmd_start() {
+    docker_run opencode "$@"
+}
+
+cmd_codex() {
+    docker_run codex "$@"
+}
+
+cmd_pi() {
+    docker_run pi-coding-agent "$@"
+}
+
+cmd_shell() {
+    docker_run bash "$@"
+}
+
+cmd_run() {
+    if [[ $# -eq 0 ]]; then
+        echo "Usage: aibox run <command> [args]"
+        echo "  aibox run codex     run Codex CLI"
+        echo "  aibox run pi        run pi"
+        echo "  aibox run bash      interactive shell"
+        echo "  aibox run npm ...   run npm inside container"
+        exit 1
+    fi
+    docker_run "$@"
+}
+
+cmd_install() {
+    echo "==> aibox installer"
+    echo ""
+
+    mkdir -p "${CONFIG_DIR}"
+
+    local detected=()
+    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.config/fish/config.fish" "${HOME}/.bash_profile"; do
+        if [[ -f "${rc}" ]]; then
+            detected+=("${rc}")
+        fi
+    done
+
+    if [[ ${#detected[@]} -eq 0 ]]; then
+        echo "No shell config files detected (.bashrc, .zshrc, config.fish, .bash_profile)."
+        echo "Add this manually to your shell config:"
+        echo "  alias aibox='$(command -v aibox 2>/dev/null || echo "/path/to/aibox")'"
+        echo ""
+    fi
+
+    echo "Detected shell configs:"
+    for rc in "${detected[@]}"; do
+        echo "  - ${rc}"
+    done
+    echo ""
+
+    echo "Writing alias 'aibox' to detected shell configs..."
+    local script_path
+    script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/aibox"
+
+    for rc in "${detected[@]}"; do
+        if grep -q "alias aibox=" "${rc}" 2>/dev/null; then
+            echo "  Alias already exists in ${rc}"
+        else
+            echo "alias aibox='${script_path}'" >> "${rc}"
+            echo "  Added alias to ${rc}"
+        fi
+    done
+    echo ""
+
+    # gitconfig
+    read -r -p "Mount ~/.gitconfig into the container? This shares your git identity. (y/N) " reply
+    if [[ "${reply}" =~ ^[Yy]$ ]]; then
+        AIBOX_MOUNT_GITCONFIG=1
+        echo "  Git config: enabled"
+    else
+        AIBOX_MOUNT_GITCONFIG=0
+        echo "  Git config: skipped"
+    fi
+    echo ""
+
+    # opencode config -- with warning
+    echo "WARNING: Mounting ~/.config/opencode shares your API keys, MCP"
+    echo "configs, and agent settings. If you run opencode on untrusted"
+    echo "repos, this could expose credentials."
+    echo ""
+    read -r -p "Mount ~/.config/opencode into the container? (y/N) " reply
+    if [[ "${reply}" =~ ^[Yy]$ ]]; then
+        AIBOX_MOUNT_OPENCODE_CONFIG=1
+        echo "  OpenCode config: enabled"
+    else
+        AIBOX_MOUNT_OPENCODE_CONFIG=0
+        echo "  OpenCode config: skipped"
+    fi
+    echo ""
+
+    # gitconfig for fish
+    read -r -p "Do you use Fish shell? Add alias to config.fish? (y/N) " reply
+    local fish_config="${HOME}/.config/fish/config.fish"
+    if [[ "${reply}" =~ ^[Yy]$ ]]; then
+        mkdir -p "$(dirname "${fish_config}")"
+        if ! grep -q "alias aibox=" "${fish_config}" 2>/dev/null; then
+            echo "alias aibox='${script_path}'" >> "${fish_config}"
+            echo "  Added alias to ${fish_config}"
+        else
+            echo "  Alias already exists in ${fish_config}"
+        fi
+    fi
+
+    # save config
+    cat > "${CONFIG_FILE}" <<EOF
+AIBOX_MOUNT_GITCONFIG=${AIBOX_MOUNT_GITCONFIG}
+AIBOX_MOUNT_OPENCODE_CONFIG=${AIBOX_MOUNT_OPENCODE_CONFIG}
+AIBOX_VERSION=latest
+EOF
+
+    # pull image
+    echo ""
+    echo "Pulling Docker image $(image_ref)..."
+    docker pull "$(image_ref)" || {
+        echo "Failed to pull image. Try again later or run: aibox build"
+        exit 1
+    }
+
+    echo ""
+    echo "Done. Restart your shell or run:"
+    echo "  source ~/.bashrc"
+    echo ""
+    echo "Then try: aibox start"
+}
+
+cmd_update() {
+    echo "Pulling $(image_ref)..."
+    docker pull "$(image_ref)"
+    echo "Done."
+}
+
+cmd_clean() {
+    local remove_image=0
+    if [[ "${1:-}" == "--image" ]]; then
+        remove_image=1
+    fi
+
+    echo "Removing stopped aibox containers..."
+    docker container prune -f --filter "ancestor=$(image_ref)" 2>/dev/null || true
+
+    if [[ "${remove_image}" == "1" ]]; then
+        echo "Removing image $(image_ref)..."
+        docker rmi "$(image_ref)" 2>/dev/null || true
+        echo "Done."
+    else
+        echo "Done. Use 'aibox clean --image' to also remove the image."
+    fi
+}
+
+cmd_build() {
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local dockerfile="${script_dir}/.docker/Dockerfile"
+
+    if [[ ! -f "${dockerfile}" ]]; then
+        echo "Dockerfile not found at ${dockerfile}"
+        echo "Are you running from the aibox repository?"
+        exit 1
+    fi
+
+    echo "Building aibox:dev..."
+    docker build -t aibox:dev -f "${dockerfile}" "${script_dir}"
+    echo "Done. Run with: docker run -it --rm -v \"\$(pwd):/workspace\" aibox:dev"
+}
+
+cmd_version() {
+    echo "aibox"
+    echo "  pinned version: ${AIBOX_VERSION}"
+    if command -v docker &>/dev/null; then
+        local remote
+        remote=$(docker manifest inspect "$(image_ref)" 2>/dev/null | head -1 || echo "unknown")
+        if [[ "${remote}" != "unknown" ]]; then
+            echo "  remote: $(image_ref) available"
+        else
+            echo "  remote: not available (or no network)"
+        fi
+    fi
+}
+
+cmd_help() {
+    cat <<EOF
+aibox -- isolated AI coding sandbox
+
+  aibox start [args]       Start opencode in sandbox
+  aibox codex [args]       Run OpenAI Codex CLI
+  aibox pi [args]          Run pi coding agent
+  aibox run <cmd> [args]   Run any command inside sandbox
+  aibox shell              Interactive shell inside sandbox
+  aibox install            Set up shell alias and preferences
+  aibox update             Pull latest Docker image
+  aibox clean [--image]    Remove containers (and image)
+  aibox build              Build image locally from .docker/
+  aibox version            Show version info
+  aibox help               Show this message
+
+Examples:
+  aibox start
+  aibox start -p "refactor the auth module"
+  aibox codex
+  aibox run npm test
+  aibox shell
+
+Image: ${IMAGE}
+Version: ${AIBOX_VERSION}
+EOF
+}
+
+# --------------------------------------------------
+# entrypoint
+# --------------------------------------------------
+
+case "${1:-help}" in
+    start)    shift; cmd_start "$@" ;;
+    codex)    shift; cmd_codex "$@" ;;
+    pi)       shift; cmd_pi "$@" ;;
+    shell)    shift; cmd_shell "$@" ;;
+    run)      shift; cmd_run "$@" ;;
+    install)  shift; cmd_install "$@" ;;
+    update)   shift; cmd_update "$@" ;;
+    clean)    shift; cmd_clean "$@" ;;
+    build)    shift; cmd_build "$@" ;;
+    version)  shift; cmd_version "$@" ;;
+    help|-h|--help) cmd_help ;;
+    *)
+        echo "Unknown command: ${1:-}"
+        echo ""
+        cmd_help
+        exit 1
+        ;;
+esac
