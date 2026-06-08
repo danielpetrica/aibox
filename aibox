@@ -12,6 +12,8 @@ VERSION_FILE="${CONFIG_DIR}/version"
 
 AIBOX_MOUNT_GITCONFIG=0
 AIBOX_MOUNT_OPENCODE_CONFIG=0
+AIBOX_MOUNT_OPENCODE_AUTH=0
+AIBOX_OPENCODE_AUTH_READONLY=0
 AIBOX_VERSION=latest
 
 if [[ -f "${CONFIG_FILE}" ]]; then
@@ -39,6 +41,18 @@ docker_run() {
 
     if [[ "${AIBOX_MOUNT_OPENCODE_CONFIG}" == "1" ]] && [[ -d "${HOME}/.config/opencode" ]]; then
         mounts+=(-v "${HOME}/.config/opencode:/home/aibox/.config/opencode")
+    fi
+
+    if [[ "${AIBOX_MOUNT_OPENCODE_AUTH}" == "1" ]] && [[ -f "${HOME}/.local/share/opencode/auth.json" ]]; then
+        mounts+=(-v "${HOME}/.local/share/opencode/auth.json:/home/aibox/.local/share/opencode/auth.json:ro")
+    fi
+
+    if [[ "${AIBOX_MOUNT_OPENCODE_AUTH}" == "2" ]] && [[ -f "${HOME}/.config/aibox/auth.json" ]]; then
+        if [[ "${AIBOX_OPENCODE_AUTH_READONLY}" == "1" ]]; then
+            mounts+=(-v "${HOME}/.config/aibox/auth.json:/home/aibox/.local/share/opencode/auth.json:ro")
+        else
+            mounts+=(-v "${HOME}/.config/aibox/auth.json:/home/aibox/.local/share/opencode/auth.json")
+        fi
     fi
 
     exec docker run -it --rm \
@@ -146,6 +160,41 @@ cmd_install() {
     fi
     echo ""
 
+    # opencode auth persistence
+    echo "OpenCode stores login credentials in ~/.local/share/opencode/auth.json"
+    echo "when you run /connect to add API keys. You can persist this across"
+    echo "container sessions."
+    echo ""
+    read -r -p "Persist opencode login between sessions? (y/N) " reply
+    if [[ "${reply}" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "  Share host: mounts your host auth.json (read-only)."
+        echo "  Isolated:   creates an empty file in ~/.config/aibox/auth.json."
+        echo "              Run /connect inside the container to set up credentials."
+        echo ""
+        read -r -p "Share with host machine? (y/N) " reply2
+        if [[ "${reply2}" =~ ^[Yy]$ ]]; then
+            AIBOX_MOUNT_OPENCODE_AUTH=1
+            AIBOX_OPENCODE_AUTH_READONLY=1
+            echo "  OpenCode auth: shared with host (read-only)"
+        else
+            AIBOX_MOUNT_OPENCODE_AUTH=2
+            read -r -p "Allow container to write new credentials? (Y/n) " reply3
+            if [[ "${reply3}" =~ ^[Nn]$ ]]; then
+                AIBOX_OPENCODE_AUTH_READONLY=1
+                echo "  OpenCode auth: isolated (read-only)"
+            else
+                AIBOX_OPENCODE_AUTH_READONLY=0
+                echo "  OpenCode auth: isolated (read-write)"
+            fi
+            touch "${CONFIG_DIR}/auth.json" 2>/dev/null || true
+        fi
+    else
+        AIBOX_MOUNT_OPENCODE_AUTH=0
+        echo "  OpenCode auth: skipped"
+    fi
+    echo ""
+
     # gitconfig for fish
     read -r -p "Do you use Fish shell? Add alias to config.fish? (y/N) " reply
     local fish_config="${HOME}/.config/fish/config.fish"
@@ -163,6 +212,8 @@ cmd_install() {
     cat > "${CONFIG_FILE}" <<EOF
 AIBOX_MOUNT_GITCONFIG=${AIBOX_MOUNT_GITCONFIG}
 AIBOX_MOUNT_OPENCODE_CONFIG=${AIBOX_MOUNT_OPENCODE_CONFIG}
+AIBOX_MOUNT_OPENCODE_AUTH=${AIBOX_MOUNT_OPENCODE_AUTH}
+AIBOX_OPENCODE_AUTH_READONLY=${AIBOX_OPENCODE_AUTH_READONLY}
 AIBOX_VERSION=latest
 EOF
 
