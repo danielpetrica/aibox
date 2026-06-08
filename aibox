@@ -6,6 +6,9 @@ CONFIG_DIR="${HOME}/.config/aibox"
 CONFIG_FILE="${CONFIG_DIR}/config"
 VERSION_FILE="${CONFIG_DIR}/version"
 
+AIBOX_SCRIPT_VERSION="v0.2.0"
+UPDATE_REPO="danielpetrica/aibox"
+
 # --------------------------------------------------
 # config loading
 # --------------------------------------------------
@@ -235,6 +238,41 @@ EOF
 cmd_update() {
     echo "Pulling $(image_ref)..."
     docker pull "$(image_ref)"
+
+    local script_path
+    script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/aibox"
+
+    if [[ ! -w "${script_path}" ]]; then
+        echo "  Script at ${script_path} is not writable, skipping update."
+        echo "Done."
+        return
+    fi
+
+    echo "Checking for script update..."
+    local latest_tag
+    latest_tag=$(curl -fsSL "https://api.github.com/repos/${UPDATE_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4 || true)
+
+    if [[ -z "${latest_tag}" ]]; then
+        echo "  Warning: could not fetch latest release tag."
+        echo "Done."
+        return
+    fi
+
+    if [[ -n "${AIBOX_SCRIPT_VERSION}" ]] && [[ "${latest_tag}" == "${AIBOX_SCRIPT_VERSION}" ]]; then
+        echo "  Script is already current (${AIBOX_SCRIPT_VERSION})."
+        echo "Done."
+        return
+    fi
+
+    local download_url="https://raw.githubusercontent.com/${UPDATE_REPO}/${latest_tag}/aibox"
+    local tmp; tmp=$(mktemp)
+    if curl -fsSL "${download_url}" -o "${tmp}" 2>/dev/null || wget -q "${download_url}" -O "${tmp}" 2>/dev/null; then
+        cp "${tmp}" "${script_path}" && chmod +x "${script_path}"
+        echo "  Script updated from ${AIBOX_SCRIPT_VERSION:-dev} to ${latest_tag}."
+    else
+        echo "  Warning: could not download script from ${download_url}."
+    fi
+    rm -f "${tmp}"
     echo "Done."
 }
 
