@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-VERSION=$(cat VERSION)
-sed -i "s/^AIBOX_SCRIPT_VERSION=.*/AIBOX_SCRIPT_VERSION=\"${VERSION}\"/" aibox
-git add aibox
