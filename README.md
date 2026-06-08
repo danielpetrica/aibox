@@ -1,6 +1,6 @@
 # aibox
 
-![aibox](.docker/aibox-header.png)
+![aibox](.github/social-preview.png)
 
 Isolated sandbox for AI coding tools. Run opencode, Codex CLI, or pi inside Docker. Your host credentials and filesystem stay safe.
 
