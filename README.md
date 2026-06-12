@@ -10,7 +10,7 @@ Isolated sandbox for AI coding tools. Run opencode, Codex CLI, or pi inside Dock
 
 aibox wraps AI coding tools in a Docker container. You type `aibox start` instead of `opencode`, and your AI coding session runs inside a sandbox. The container has Node.js, PHP, git, and three AI coding CLI tools pre-installed. No host SSH keys, no AWS credentials, no `.env` files from other projects -- only the directory you're standing in is visible inside the container.
 
-When you're done, the container disappears. Nothing persists. Every session starts clean.
+When you're done, the container disappears. By default, nothing persists -- every session starts clean. Opt-in data persistence keeps your sessions, keys, and config across restarts.
 
 ## Why
 
@@ -28,7 +28,7 @@ This isn't security theater. AI coding tools have real attack surface, and most 
 
 **Tool-agnostic.** Not just opencode. Codex CLI and pi are bundled too. Use whichever tool fits the task. The sandbox doesn't care.
 
-**Stateless.** The container is destroyed on exit. No lingering processes, no leftover volumes, no state to clean up. Every session is a fresh environment.
+**Stateless by default.** The container is destroyed on exit. No lingering processes, no leftover volumes, no state to clean up. Every session is a fresh environment. Opt into data persistence (`AIBOX_PERSIST_DATA=1`) to keep session history, API keys, and config across restarts.
 
 **Clean codebase.** The repo root has 4 files: the script, the installer, the license, and this readme. Docker config lives in `.docker/`. CI lives in `.github/`. No clutter.
 
@@ -39,18 +39,16 @@ This isn't security theater. AI coding tools have real attack surface, and most 
 ```
 aibox start
   -> docker run -it --rm
-     -v $(pwd):/workspace          # only current dir visible
-     -v ~/.gitconfig (opt-in)      # git identity, if you allowed it
-     -v ~/.config/opencode (opt-in) # API keys, if you accepted the risk
-     -v ~/.local/share/opencode/auth.json (opt-in, shared, ro) # host credentials
-     -v ~/.config/aibox/auth.json  (opt-in, isolated, rw/ro)   # container-only credentials
-     --entrypoint opencode         # default tool
+     -v $(pwd):/workspace              # only current dir visible
+     -v ~/.gitconfig (opt-in)          # git identity, if you allowed it
+     -v ~/.config/aibox/data/<tool>/   # harness data persistence (opt-in): sessions, keys, config
+     --entrypoint opencode             # default tool
      ghcr.io/danielpetrica/aibox:latest
 ```
 
 The image is pre-built with Ubuntu 26.04 LTS, Node.js v24, PHP 8.5, git, build tools, and three AI coding CLIs. It's published automatically to GitHub Container Registry when a version tag is pushed.
 
-`aibox install` asks about mounting gitconfig, opencode config, opencode auth (login persistence), and which shell. Your answers are saved to `~/.config/aibox/config` and never asked again.
+`aibox install` asks about mounting gitconfig, harness data persistence (sessions, API keys, config — isolated in `~/.config/aibox/data/<harness>/`), and which shell. Your answers are saved to `~/.config/aibox/config` and never asked again.
 
 `aibox update` pulls the latest image. `aibox clean --image` wipes everything.
 

@@ -6,7 +6,7 @@ CONFIG_DIR="${HOME}/.config/aibox"
 CONFIG_FILE="${CONFIG_DIR}/config"
 VERSION_FILE="${CONFIG_DIR}/version"
 
-AIBOX_SCRIPT_VERSION="v0.2.0"
+AIBOX_SCRIPT_VERSION="v0.3.0"
 UPDATE_REPO="danielpetrica/aibox"
 
 # --------------------------------------------------
@@ -17,6 +17,7 @@ AIBOX_MOUNT_GITCONFIG=0
 AIBOX_MOUNT_OPENCODE_CONFIG=0
 AIBOX_MOUNT_OPENCODE_AUTH=0
 AIBOX_OPENCODE_AUTH_READONLY=0
+AIBOX_PERSIST_DATA=0
 AIBOX_VERSION=latest
 
 if [[ -f "${CONFIG_FILE}" ]]; then
@@ -31,6 +32,13 @@ image_ref() {
     echo "${IMAGE}:${AIBOX_VERSION}"
 }
 
+# Harness data directories: relative paths under /home/aibox to persist per harness
+declare -A HARNESS_DIRS
+HARNESS_DIRS["opencode"]=".config/opencode .local/share/opencode .cache/opencode .local/state/opencode"
+HARNESS_DIRS["codex"]=".codex .config/codex .local/share/codex"
+HARNESS_DIRS["pi"]=".pi .config/pi"
+HARNESS_DIRS["pi-coding-agent"]=".pi .config/pi"
+
 docker_run() {
     local cmd="${1:-opencode}"
     shift || true
@@ -42,19 +50,32 @@ docker_run() {
         mounts+=(-v "${HOME}/.gitconfig:/home/aibox/.gitconfig:ro")
     fi
 
-    if [[ "${AIBOX_MOUNT_OPENCODE_CONFIG}" == "1" ]] && [[ -d "${HOME}/.config/opencode" ]]; then
-        mounts+=(-v "${HOME}/.config/opencode:/home/aibox/.config/opencode")
-    fi
+    if [[ "${AIBOX_PERSIST_DATA}" == "1" ]]; then
+        local harness_data_root="${CONFIG_DIR}/data"
+        local harness_dirs="${HARNESS_DIRS[${cmd}]:-}"
+        if [[ -n "${harness_dirs}" ]]; then
+            for sub in ${harness_dirs}; do
+                local host_dir="${harness_data_root}/${cmd}/${sub}"
+                local cont_dir="/home/aibox/${sub}"
+                mkdir -p "${host_dir}"
+                mounts+=(-v "${host_dir}:${cont_dir}")
+            done
+        fi
+    else
+        if [[ "${AIBOX_MOUNT_OPENCODE_CONFIG}" == "1" ]] && [[ -d "${HOME}/.config/opencode" ]]; then
+            mounts+=(-v "${HOME}/.config/opencode:/home/aibox/.config/opencode")
+        fi
 
-    if [[ "${AIBOX_MOUNT_OPENCODE_AUTH}" == "1" ]] && [[ -f "${HOME}/.local/share/opencode/auth.json" ]]; then
-        mounts+=(-v "${HOME}/.local/share/opencode/auth.json:/home/aibox/.local/share/opencode/auth.json:ro")
-    fi
+        if [[ "${AIBOX_MOUNT_OPENCODE_AUTH}" == "1" ]] && [[ -f "${HOME}/.local/share/opencode/auth.json" ]]; then
+            mounts+=(-v "${HOME}/.local/share/opencode/auth.json:/home/aibox/.local/share/opencode/auth.json:ro")
+        fi
 
-    if [[ "${AIBOX_MOUNT_OPENCODE_AUTH}" == "2" ]] && [[ -f "${HOME}/.config/aibox/auth.json" ]]; then
-        if [[ "${AIBOX_OPENCODE_AUTH_READONLY}" == "1" ]]; then
-            mounts+=(-v "${HOME}/.config/aibox/auth.json:/home/aibox/.local/share/opencode/auth.json:ro")
-        else
-            mounts+=(-v "${HOME}/.config/aibox/auth.json:/home/aibox/.local/share/opencode/auth.json")
+        if [[ "${AIBOX_MOUNT_OPENCODE_AUTH}" == "2" ]] && [[ -f "${HOME}/.config/aibox/auth.json" ]]; then
+            if [[ "${AIBOX_OPENCODE_AUTH_READONLY}" == "1" ]]; then
+                mounts+=(-v "${HOME}/.config/aibox/auth.json:/home/aibox/.local/share/opencode/auth.json:ro")
+            else
+                mounts+=(-v "${HOME}/.config/aibox/auth.json:/home/aibox/.local/share/opencode/auth.json")
+            fi
         fi
     fi
 
@@ -149,52 +170,21 @@ cmd_install() {
     echo ""
 
     # opencode config -- with warning
-    echo "WARNING: Mounting ~/.config/opencode shares your API keys, MCP"
-    echo "configs, and agent settings. If you run opencode on untrusted"
-    echo "repos, this could expose credentials."
+    echo "OpenCode stores session history, API keys, and config in"
+    echo "~/.local/share/opencode/, ~/.config/opencode/, and ~/.cache/opencode/."
+    echo "Without persistence, all this state is lost when the container exits."
     echo ""
-    read -r -p "Mount ~/.config/opencode into the container? (y/N) " reply
+    echo "When enabled, data is stored in ~/.config/aibox/data/<harness>/"
+    echo "on the host, completely isolated from your host's own installations."
+    echo "This works for all harnesses: opencode, codex, and pi."
+    echo ""
+    read -r -p "Persist harness data (sessions, keys, config) across sessions? (y/N) " reply
     if [[ "${reply}" =~ ^[Yy]$ ]]; then
-        AIBOX_MOUNT_OPENCODE_CONFIG=1
-        echo "  OpenCode config: enabled"
+        AIBOX_PERSIST_DATA=1
+        echo "  Harness data persistence: enabled"
     else
-        AIBOX_MOUNT_OPENCODE_CONFIG=0
-        echo "  OpenCode config: skipped"
-    fi
-    echo ""
-
-    # opencode auth persistence
-    echo "OpenCode stores login credentials in ~/.local/share/opencode/auth.json"
-    echo "when you run /connect to add API keys. You can persist this across"
-    echo "container sessions."
-    echo ""
-    read -r -p "Persist opencode login between sessions? (y/N) " reply
-    if [[ "${reply}" =~ ^[Yy]$ ]]; then
-        echo ""
-        echo "  Share host: mounts your host auth.json (read-only)."
-        echo "  Isolated:   creates an empty file in ~/.config/aibox/auth.json."
-        echo "              Run /connect inside the container to set up credentials."
-        echo ""
-        read -r -p "Share with host machine? (y/N) " reply2
-        if [[ "${reply2}" =~ ^[Yy]$ ]]; then
-            AIBOX_MOUNT_OPENCODE_AUTH=1
-            AIBOX_OPENCODE_AUTH_READONLY=1
-            echo "  OpenCode auth: shared with host (read-only)"
-        else
-            AIBOX_MOUNT_OPENCODE_AUTH=2
-            read -r -p "Allow container to write new credentials? (Y/n) " reply3
-            if [[ "${reply3}" =~ ^[Nn]$ ]]; then
-                AIBOX_OPENCODE_AUTH_READONLY=1
-                echo "  OpenCode auth: isolated (read-only)"
-            else
-                AIBOX_OPENCODE_AUTH_READONLY=0
-                echo "  OpenCode auth: isolated (read-write)"
-            fi
-            touch "${CONFIG_DIR}/auth.json" 2>/dev/null || true
-        fi
-    else
-        AIBOX_MOUNT_OPENCODE_AUTH=0
-        echo "  OpenCode auth: skipped"
+        AIBOX_PERSIST_DATA=0
+        echo "  Harness data persistence: skipped"
     fi
     echo ""
 
@@ -214,9 +204,7 @@ cmd_install() {
     # save config
     cat > "${CONFIG_FILE}" <<EOF
 AIBOX_MOUNT_GITCONFIG=${AIBOX_MOUNT_GITCONFIG}
-AIBOX_MOUNT_OPENCODE_CONFIG=${AIBOX_MOUNT_OPENCODE_CONFIG}
-AIBOX_MOUNT_OPENCODE_AUTH=${AIBOX_MOUNT_OPENCODE_AUTH}
-AIBOX_OPENCODE_AUTH_READONLY=${AIBOX_OPENCODE_AUTH_READONLY}
+AIBOX_PERSIST_DATA=${AIBOX_PERSIST_DATA}
 AIBOX_VERSION=latest
 EOF
 
