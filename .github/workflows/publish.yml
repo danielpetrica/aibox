@@ -4,17 +4,27 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+permissions:
+  contents: read
+  packages: write
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@v6
@@ -25,28 +35,64 @@ jobs:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest
+      - name: Build and push (${{ matrix.arch }})
+        run: |
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            --file ./.docker/Dockerfile \
+            --tag ghcr.io/${{ github.repository }}:${{ github.ref_name }}-${{ matrix.arch }} \
+            --push \
+            .
 
-      - name: Build and push
-        uses: docker/build-push-action@v7
+  merge:
+    name: Merge Multi-Arch Manifests
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
         with:
-          context: .
-          file: ./.docker/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge manifests
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          MAJOR="${VERSION%%.*}"
+          REST="${VERSION#*.}"
+          MINOR="${REST%%.*}"
+
+          REPO="ghcr.io/${{ github.repository }}"
+          AMD64="${REPO}:${TAG}-amd64"
+          ARM64="${REPO}:${TAG}-arm64"
+
+          set -ex
+
+          docker buildx imagetools create \
+            -t "${REPO}:${VERSION}" \
+            "${AMD64}" \
+            "${ARM64}"
+
+          docker buildx imagetools create \
+            -t "${REPO}:${MAJOR}.${MINOR}" \
+            "${AMD64}" \
+            "${ARM64}"
+
+          docker buildx imagetools create \
+            -t "${REPO}:${MAJOR}" \
+            "${AMD64}" \
+            "${ARM64}"
+
+          docker buildx imagetools create \
+            -t "${REPO}:latest" \
+            "${AMD64}" \
+            "${ARM64}"

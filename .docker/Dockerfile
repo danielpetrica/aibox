@@ -36,7 +36,8 @@ RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent \
 RUN useradd -m -s /bin/bash aibox \
     && echo "aibox ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/aibox
 
-RUN mkdir -p /workspace && chown aibox:aibox /workspace
+RUN mkdir -p /home/aibox/.local/share/opencode && chown -R aibox:aibox /home/aibox/.local \
+    && mkdir -p /workspace && chown aibox:aibox /workspace
 
 USER aibox
 WORKDIR /workspace
